@@ -3,8 +3,6 @@
 # !!todo: metadata add track number. make compatible with "NA" null value
 
 # todo: check for conversion success before deleting?
-# todo: check for filecount at end?
-# todo: progress counter for for-loop
 
 # +-------------------------------------------------------------------------+ #
 # |                              Documentation                              | #
@@ -39,6 +37,15 @@
 # -i: input
 # -an: no audio in output
 # -vcodec: copy the image metadata
+
+#                                    Notes                                    #
+# 
+# stdout: Note that program calls within functions have their stdout silenced
+#         implicitly.
+# Opus & Covers: ffmpeg does not keep cover images through opus conversions,
+#         so we must dump and inject it into the final file. Incidentally, 
+#         yt-dlp seems to Download widescreen cover images, which are incorrect.
+#         So we use imagemagick to crop and downscale.
 
 # +-------------------------------------------------------------------------+ #
 # |                               Global Vars                               | #
@@ -173,7 +180,7 @@ check_dependencies() {
   fi
 }
 
-# Print to terminal (uses stderr so functions can leverage echo's stdout for return values)
+# Print to terminal (uses stderr so functions can return echo's stdout)
 print() {
     echo -e "$@" >&2
 }
@@ -194,6 +201,14 @@ error_report() {
   done
 }
 
+get_filesize_mb() {
+  local file="$1"
+
+  local size_bytes=$(wc -c < "$file")
+  local size_mb=$(awk "BEGIN {printf \"%.1f MB\", $size_bytes / 1024 / 1024}")
+  echo "$size_mb"
+}
+
 delete_file() {
   local file="$1"
 
@@ -203,21 +218,48 @@ delete_file() {
   fi
 }
 
-cleanup() {
-  local move_src="$1" # $filepath_transcoded_tmp
-  local move_dst="$2" # $filepath_final_out
-  local albumart_extracted="$3" # $albumart_extracted_filename
-  local albumart_cropped="$4" # $albumart_cropped_filename
+verify_then_delete() {
+  local original_file_filepath="$1"
+  local converted_src_filepath="$2"
+  local converted_dst_filepath="$3"
 
-  # move (clobber) file into final destination
-  # remove temp files (attempt regardless if files were made this session)
-  # todo: remove now-old opus assuming it's conversion was successful
+  opusinfo "$converted_dst_filepath" >/dev/null 2>&1
+
+  if [ $? -ne 0 ]; then
+    print "$COLOR_BRIGHT_RED""  - Destination failed opus-check. Not deleting original""$COLOR_RESET"
+    print "$COLOR_BRIGHT_RED""    src: $original_file_filepath""$COLOR_RESET"
+    print "$COLOR_BRIGHT_RED""    dst: $converted_dst_filepath""$COLOR_RESET"
+
+    error_tracker+=("opusinfo errored validating: $converted_dst_filepath")
+    return 1
+  fi
+
+  local original_filesize=$(get_filesize_mb "$original_file_filepath")
+  local output_filesize=$(get_filesize_mb "$converted_dst_filepath")
+
+  print "  $COLOR_BRIGHT_YELLOW""Input Size: $original_filesize | Output Size: $output_filesize""$COLOR_RESET"
+
+  delete_file "$original_file_filepath"
+  delete_file "$converted_src_filepath"
+}
+
+cleanup() {
+  local original_file="$1" # $filename
+  local move_src="$2" # $filepath_transcoded_tmp
+  local move_dst="$3" # $filepath_final_out
+  local albumart_extracted="$4" # $albumart_extracted_filename
+  local albumart_cropped="$5" # $albumart_cropped_filename
+
   print "$COLOR_BRIGHT_YELLOW""  Cleanup""$COLOR_RESET"
   print_verbose "  + mv\n    src: $move_src\n    dst: $move_dst"
 
-  mv "$move_src" "$move_dst"
+  # remove temp files (attempt regardless if files were made this session)
   delete_file "$albumart_extracted"
   delete_file "$albumart_cropped"
+
+  # move (clobber) file into final destination
+  mv "$move_src" "$move_dst"
+  verify_then_delete "$original_file" "$move_src" "$move_dst" 
 }
 
 initialize() {
@@ -241,11 +283,6 @@ initialize() {
 # +-------------------------------------------------------------------------+ #
 # |                                Download                                 | #
 # +-------------------------------------------------------------------------+ #
-
-# Note: ffmpeg does not keep cover images through opus conversions, so we must
-#       dump and inject it into the final file. Incidentally, yt-dlp seems to
-#       Download widescreen cover images, which are incorrect. So we use
-#       imagemagick to crop and downscale.
 
 download_music() {
   local yt_url="$1" # $url
@@ -379,6 +416,12 @@ crop_album_cover() {
     +repage \
     -resize 512x512 \
     "$output"
+
+  # Failure handling
+  if [ $? -ne 0 ]; then
+    print "  $COLOR_BRIGHT_RED""image-magick failed to crop image""$COLOR_RESET"
+    return 1
+  fi
 }
 
 set_universal_cover_fallback() {
@@ -466,6 +509,11 @@ print "$COLOR_BRIGHT_YELLOW""Step: Downsample All to $BITRATE Opus""$COLOR_RESET
 
 shopt -s nullglob # dont expand unmatched globs
 for filename in *.opus *.mp3 *.flac; do
+  # Skip temp files
+  if [[ "$filename" == *.tmp* ]]; then
+    continue
+  fi
+
   print "\n""$COLOR_BRIGHT_YELLOW""File: ""$COLOR_BRIGHT_GREEN""$filename""$COLOR_RESET"
 
   basename="${filename%.*}"  # removes everything after the last dot
@@ -498,6 +546,7 @@ for filename in *.opus *.mp3 *.flac; do
     "$filepath_transcoded_tmp" \
   
   cleanup \
+    "$filename" \
     "$filepath_transcoded_tmp" \
     "$filepath_final_out" \
     "$albumart_extracted_filename" \
