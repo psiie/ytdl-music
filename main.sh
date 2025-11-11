@@ -45,7 +45,7 @@
 # -vcodec: copy the image metadata
 
 # +-------------------------------------------------------------------------+ #
-# |                             Initialization                              | #
+# |                               Global Vars                               | #
 # +-------------------------------------------------------------------------+ #
 
 COLOR_RESET="\033[0m"
@@ -59,35 +59,11 @@ DOWNLOAD_DIR="$HOME/Downloads/yt-dlp"
 YTDL=$(command -v yt-dlp || command -v youtube-dl)
 error_tracker=()
 
-# --- Dependency Check --- #
-check_dependencies() {
-  local DEPS=($YTDL ffmpeg ffprobe magick kid3-cli) # List of required commands
-  local is_missing_deps=0 # Flag for missing deps
-
-  for cmd in "${DEPS[@]}"; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-      echo "Error: $cmd is not installed."
-      is_missing_deps=1
-    fi
-  done
-
-  # Quit if anything is missing
-  if [ "$is_missing_deps" -eq 1 ]; then
-    exit 1
-  fi
-}
-
-# --- Setup --- #
-check_dependencies
-mkdir -p "$WORKING_DIR"
-mkdir -p "$DOWNLOAD_DIR"
-cd $WORKING_DIR
-
-
 # +-------------------------------------------------------------------------+ #
 # |                          Bash Args Boilerplate                          | #
 # +-------------------------------------------------------------------------+ #
 
+# globals related to arg-parsing is kept here for modularity
 POSITIONAL_ARGS=()
 BITRATE="64k"
 SKIP_YTDL=NO
@@ -179,10 +155,26 @@ else
   url="$1"
 fi
 
-
 # +-------------------------------------------------------------------------+ #
 # |                                  Utils                                  | #
 # +-------------------------------------------------------------------------+ #
+
+check_dependencies() {
+  local DEPS=($YTDL ffmpeg ffprobe magick kid3-cli) # List of required commands
+  local is_missing_deps=0 # Flag for missing deps
+
+  for cmd in "${DEPS[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "Error: $cmd is not installed."
+      is_missing_deps=1
+    fi
+  done
+
+  # Quit if anything is missing
+  if [ "$is_missing_deps" -eq 1 ]; then
+    exit 1
+  fi
+}
 
 # Print to terminal (uses stderr so functions can leverage echo's stdout for return values)
 print() {
@@ -220,6 +212,24 @@ cleanup() {
   mv "$move_src" "$move_dst"
   rm -f "$albumart_extracted"
   rm -f "$albumart_cropped"
+}
+
+initialize() {
+  check_dependencies
+
+  # Create working directories
+  mkdir -p "$WORKING_DIR"
+  mkdir -p "$DOWNLOAD_DIR"
+  cd $WORKING_DIR
+
+  # Print debug info
+  print_verbose ""
+  print_verbose "yt-dl/p location: $YTDL"
+  print_verbose "Positional Arguments: $POSITIONAL_ARGS"
+  print_verbose "Bitrate: $BITRATE"
+  print_verbose "Skip yt-dl step?: $SKIP_YTDL"
+  print_verbose "Skip Album Art Management?: $SKIP_ALBUM_ART"
+  print_verbose ""
 }
 
 # +-------------------------------------------------------------------------+ #
@@ -332,12 +342,11 @@ extract_album_cover() {
   fi
 }
 
-# --- Crop Cover Image ---
-# crop_album_cover <input> <output>
-# Arguments
-#   input   – filename of the input image
-#   output  – filename of the output (cropped) image
 crop_album_cover() {
+  # crop_album_cover <input> <output>
+  # Arguments
+  #   input   – filename of the input image
+  #   output  – filename of the output (cropped) image
   local input="$1" # $albumart_extracted_filename
   local output="$2" # $albumart_cropped_filename
 
@@ -437,19 +446,13 @@ transcode_audio() {
 # |                                   Main                                  | #
 # +-------------------------------------------------------------------------+ #
 
-# Immediately Print Some Information
-print_verbose ""
-print_verbose "yt-dl/p location: $YTDL"
-print_verbose "Positional Arguments: $POSITIONAL_ARGS"
-print_verbose "Bitrate: $BITRATE"
-print_verbose "Skip yt-dl step?: $SKIP_YTDL"
-print_verbose "Skip Album Art Management?: $SKIP_ALBUM_ART"
-print_verbose ""
+# --- Initial Checks & Setup --- #
+initialize
 
 # --- Download Music --- #
 download_music $url
 
-# --- Iterate over files in working directory --- #
+# --- Iterate Over Files & Process --- #
 echo -e "$COLOR_YELLOW_BRIGHT""Step: Downsample All to $BITRATE Opus""$COLOR_RESET""\n"
 
 shopt -s nullglob # dont expand unmatched globs
