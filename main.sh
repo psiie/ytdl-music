@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# todo: flag to extract a album art cover from one of any file, and use that as a cover. or some sort of combination to use last valid album art using a set tmp file
+# todo: flag to extract a album art cover from one of any file, and use that as a cover. 
+# or some sort of combination to use last valid album art using a set tmp file
 
 # todo: metadata add track number. make compatible with "NA" null value
 # todo: test for failures
@@ -8,8 +9,6 @@
 # todo: check for conversion success before deleting?
 # todo: check for filecount at end?
 # todo: progress counter for for-loop
-# 
-# ex: https://music.youtube.com/playlist\?list\=OLAK5uy_kvrD-dFZ-EwB4GY8qfKLGzekTbheTkHlE
 
 # +-------------------------------------------------------------------------+ #
 # |                              Documentation                              | #
@@ -57,25 +56,29 @@ COLOR_RED_BRIGHT="\033[91m"
 
 WORKING_DIR="$HOME/Downloads/_yt-dlp"
 DOWNLOAD_DIR="$HOME/Downloads/yt-dlp"
-
 YTDL=$(command -v yt-dlp || command -v youtube-dl)
-DEPS=($YTDL ffmpeg ffprobe magick kid3-cli) # List of required commands
-MISSING=0 # Flag for missing deps
 error_tracker=()
 
-# Check each of the deps before quitting on failure
-for cmd in "${DEPS[@]}"; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "Error: $cmd is not installed."
-    MISSING=1
+# --- Dependency Check --- #
+check_dependencies() {
+  local DEPS=($YTDL ffmpeg ffprobe magick kid3-cli) # List of required commands
+  local is_missing_deps=0 # Flag for missing deps
+
+  for cmd in "${DEPS[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "Error: $cmd is not installed."
+      is_missing_deps=1
+    fi
+  done
+
+  # Quit if anything is missing
+  if [ "$is_missing_deps" -eq 1 ]; then
+    exit 1
   fi
-done
+}
 
-# Quit if anything is missing
-if [ "$MISSING" -eq 1 ]; then
-  exit 1
-fi
-
+# --- Setup --- #
+check_dependencies
 mkdir -p "$WORKING_DIR"
 mkdir -p "$DOWNLOAD_DIR"
 cd $WORKING_DIR
@@ -84,6 +87,13 @@ cd $WORKING_DIR
 # +-------------------------------------------------------------------------+ #
 # |                          Bash Args Boilerplate                          | #
 # +-------------------------------------------------------------------------+ #
+
+POSITIONAL_ARGS=()
+BITRATE="64k"
+SKIP_YTDL=NO
+VERBOSE=""
+SKIP_ALBUM_ART=NO # Using "NO" for increased readability in if-statements
+IS_COLLECTION=""
 
 show_help() {
   cat <<EOF
@@ -111,13 +121,6 @@ Requirements:
   - kid3-cli
 EOF
 }
-
-POSITIONAL_ARGS=()
-BITRATE="64k"
-SKIP_YTDL=NO
-VERBOSE=""
-SKIP_ALBUM_ART=NO # Using "NO" for increased readability in if-statements
-IS_COLLECTION=""
 
 # Boilerplate Arg management https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
 # flags that take no values only perform one shift, instead of two
@@ -176,6 +179,11 @@ else
   url="$1"
 fi
 
+
+# +-------------------------------------------------------------------------+ #
+# |                                  Utils                                  | #
+# +-------------------------------------------------------------------------+ #
+
 # Print to terminal (uses stderr so functions can leverage echo's stdout for return values)
 print() {
     echo -e "$@" >&2
@@ -185,20 +193,6 @@ print_verbose() {
   if [ "$VERBOSE" != "YES" ]; then return; fi
   echo -e "$COLOR_MAGENTA_BRIGHT""$@""$COLOR_RESET" >&2
 }
-
-# Immediately Print Some Information
-print_verbose ""
-print_verbose "yt-dl/p location: $YTDL"
-print_verbose "Positional Arguments: $POSITIONAL_ARGS"
-print_verbose "Bitrate: $BITRATE"
-print_verbose "Skip yt-dl step?: $SKIP_YTDL"
-print_verbose "Skip Album Art Management?: $SKIP_ALBUM_ART"
-print_verbose ""
-
-
-# +-------------------------------------------------------------------------+ #
-# |                                  Utils                                  | #
-# +-------------------------------------------------------------------------+ #
 
 # A nicely printed report at the end
 error_report() {
@@ -378,20 +372,26 @@ set_universal_cover_fallback() {
     return 0
   fi
 
-  print_verbose "  Setting Universal Album Art Fallback"
-  cp "$cover" "$universal_cover"
+  if [ -f "$cover" ]; then
+    print_verbose "  Setting Universal Album Art Fallback"
+    cp "$cover" "$universal_cover"
+  fi
 }
 
 set_album_cover() {
   local cover="$1" # $albumart_cropped_filename
   local output="$2" # $filepath_transcoded_tmp
+  local fallback="$3" # $albumart_universal_album_filename
 
   # Setting cover-art for opus is notoriously difficult. kid3-cli works, ffmpeg
   # works too, but only if image is already in spec format for passin as custom
   # metadata argument.
   # 
+  # Note: The fallback cover is set through a cp command (if conditions apply)
+  #       before this function runs
+  # 
   # BUG: when specifying a cover, current directory does not matter! The image
-  # must be in the same directory as the file being modified
+  #      must be in the same directory as the file being modified
   if [ "$SKIP_ALBUM_ART" = "YES" ]; then
     print_verbose "Skipping: Set Album Cover"
     return 0
@@ -401,6 +401,11 @@ set_album_cover() {
   kid3-cli \
     -c "set picture:${cover} 'Cover (front)'" \
     "$output"
+
+  if [ $? -ne 0 ]; then
+    print "  $COLOR_RED_BRIGHT""set-cover error in kid3-cli""$COLOR_RESET"
+    error_tracker+=("kid3-cli errored on set-cover for: $input")
+  fi
 }
 
 # +-------------------------------------------------------------------------+ #
@@ -423,7 +428,7 @@ transcode_audio() {
     "$output"
 
   if [ $? -ne 0 ]; then
-    print "  $COLOR_RED_BRIGHT""transcode error. pushing to arr""$COLOR_RESET"
+    print "  $COLOR_RED_BRIGHT""transcode error""$COLOR_RESET"
     error_tracker+=("re-transcode to opus failed on: $input")
   fi
 }
@@ -432,47 +437,55 @@ transcode_audio() {
 # |                                   Main                                  | #
 # +-------------------------------------------------------------------------+ #
 
+# Immediately Print Some Information
+print_verbose ""
+print_verbose "yt-dl/p location: $YTDL"
+print_verbose "Positional Arguments: $POSITIONAL_ARGS"
+print_verbose "Bitrate: $BITRATE"
+print_verbose "Skip yt-dl step?: $SKIP_YTDL"
+print_verbose "Skip Album Art Management?: $SKIP_ALBUM_ART"
+print_verbose ""
+
 # --- Download Music --- #
 download_music $url
 
-# --- Scan Working Directory For Audio Files --- #
+# --- Iterate over files in working directory --- #
 echo -e "$COLOR_YELLOW_BRIGHT""Step: Downsample All to $BITRATE Opus""$COLOR_RESET""\n"
+
 shopt -s nullglob # dont expand unmatched globs
 for filename in *.opus *.mp3 *.flac; do
   print "$COLOR_YELLOW_BRIGHT""File: ""$COLOR_YELLOW""$filename""$COLOR_RESET"
 
-  # --- Calculate Filenames --- #
   basename="${file%.*}"  # removes everything after the last dot
   filepath_final_out="$DOWNLOAD_DIR/${basename}.opus"
   filepath_transcoded_tmp="$WORKING_DIR/${basename}.tmp.opus"
-
-  # --- Probe Album Cover --- #
-  albumart_ext="$(probe_album_cover_ext "$filename")"
+  albumart_ext="$(probe_album_cover_ext "$filename")" # Probe Album Cover for Extension
   albumart_extracted_filename="cover.tmp.$albumart_ext"
-  albumart_cropped_filename="cover.jpg" # we convert to jpg, so no ext appending here
-  albumart_universal_album_filename="album.jpg" # same ext as $albumart_cropped_filename
+  albumart_cropped_filename="cover.jpg"
+  albumart_universal_album_filename="album.jpg"
 
-  # --- Extract Album Cover Image --- #
-  # extract_album_cover(input, output, fallback)
-  extract_album_cover "$filename" "$albumart_extracted_filename" "$albumart_universal_album_filename"
+  extract_album_cover \
+    "$filename" \
+    "$albumart_extracted_filename" \
+    "$albumart_universal_album_filename"
 
-  # --- Crop Cover Image --- #
-  # crop_album_cover(input, output)
-  crop_album_cover "$albumart_extracted_filename" "$albumart_cropped_filename"
+  crop_album_cover \
+    "$albumart_extracted_filename" \
+    "$albumart_cropped_filename"
 
-  # --- Set Universal Fallback Cover --- #
-  # set_universal_cover_fallback(cover, universal_cover)
-  set_universal_cover_fallback "$albumart_cropped_filename" "$albumart_universal_album_filename"
+  set_universal_cover_fallback \
+    "$albumart_cropped_filename" \
+    "$albumart_universal_album_filename"
   
-  # --- Transcode Opus --- #
-  # transcode_audio(input, output)
-  transcode_audio "$filename" "$filepath_transcoded_tmp"
+  transcode_audio \
+    "$filename" \
+    "$filepath_transcoded_tmp"
 
-  # --- Set Cover Art --- #
-  # set_album_cover(cover, output)
-  set_album_cover "$albumart_cropped_filename" "$filepath_transcoded_tmp"
+  set_album_cover \
+    "$albumart_cropped_filename" \
+    "$filepath_transcoded_tmp" \
+    "$albumart_universal_album_filename"
   
-  # --- Cleanup --- #
   cleanup \
     "$filepath_transcoded_tmp" \
     "$filepath_final_out" \
@@ -483,6 +496,6 @@ done
 shopt -u nullglob # see matching shopt above
 
 # --- Final Cleanup --- #
-rm -f "$albumart_universal_album_filename"
+# rm -f "$albumart_universal_album_filename"
 echo -e "$COLOR_YELLOW_BRIGHT""Process Complete""$COLOR_RESET"
 error_report
