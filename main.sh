@@ -214,14 +214,13 @@ delete_file() {
 
   if [ -f "$file" ]; then
     print_verbose "  + rm -f $file"
-    rm -f $file
+    rm -f "$file"
   fi
 }
 
 verify_then_delete() {
   local original_file_filepath="$1"
-  local converted_src_filepath="$2"
-  local converted_dst_filepath="$3"
+  local converted_dst_filepath="$2"
 
   opusinfo "$converted_dst_filepath" >/dev/null 2>&1
 
@@ -240,7 +239,6 @@ verify_then_delete() {
   print "  $COLOR_BRIGHT_YELLOW""Input Size: $original_filesize | Output Size: $output_filesize""$COLOR_RESET"
 
   delete_file "$original_file_filepath"
-  delete_file "$converted_src_filepath"
 }
 
 cleanup() {
@@ -259,7 +257,7 @@ cleanup() {
 
   # move (clobber) file into final destination
   mv "$move_src" "$move_dst"
-  verify_then_delete "$original_file" "$move_src" "$move_dst" 
+  verify_then_delete "$original_file" "$move_dst" 
 }
 
 initialize() {
@@ -489,7 +487,7 @@ transcode_audio() {
     "$output"
 
   if [ $? -ne 0 ]; then
-    print "  $COLOR_BRIGHT_RED""transcode error""$COLOR_RESET"
+    print "  $COLOR_BRIGHT_RED""- Transcode error""$COLOR_RESET"
     error_tracker+=("re-transcode to opus failed on: $input")
   fi
 }
@@ -511,6 +509,7 @@ shopt -s nullglob # dont expand unmatched globs
 for filename in *.opus *.mp3 *.flac; do
   # Skip temp files
   if [[ "$filename" == *.tmp* ]]; then
+    print_verbose "  Skipping .tmp file $filename"
     continue
   fi
 
