@@ -43,8 +43,37 @@
 # -an: no audio in output
 # -vcodec: copy the image metadata
 
+# +-------------------------------------------------------------------------+ #
+# |                             Initialization                              | #
+# +-------------------------------------------------------------------------+ #
 
+COLOR_RESET="\033[0m"
+COLOR_YELLOW="\033[33m"
+COLOR_YELLOW_BRIGHT="\033[93m"
 
+WORKING_DIR="$HOME/Downloads/_yt-dlp"
+DOWNLOAD_DIR="$HOME/Downloads/yt-dlp"
+
+YTDL=$(command -v yt-dlp || command -v youtube-dl)
+DEPS=($YTDL ffmpeg ffprobe magick kid3-cli) # List of required commands
+MISSING=0 # Flag for missing deps
+
+# Check each of the deps before quitting on failure
+for cmd in "${DEPS[@]}"; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Error: $cmd is not installed."
+    MISSING=1
+  fi
+done
+
+# Quit if anything is missing
+if [ "$MISSING" -eq 1 ]; then
+  exit 1
+fi
+
+mkdir -p "$WORKING_DIR"
+mkdir -p "$DOWNLOAD_DIR"
+cd $WORKING_DIR
 
 # +-------------------------------------------------------------------------+ #
 # |                          Bash Args Boilerplate                          | #
@@ -139,37 +168,6 @@ fi
 
 
 
-# +-------------------------------------------------------------------------+ #
-# |                             Initialization                              | #
-# +-------------------------------------------------------------------------+ #
-
-COLOR_RESET="\033[0m"
-COLOR_YELLOW="\033[33m"
-COLOR_YELLOW_BRIGHT="\033[93m"
-
-WORKING_DIR="$HOME/Downloads/_yt-dlp"
-DOWNLOAD_DIR="$HOME/Downloads/yt-dlp"
-
-YTDL=$(command -v yt-dlp || command -v youtube-dl)
-DEPS=($YTDL ffmpeg ffprobe magick kid3-cli) # List of required commands
-MISSING=0 # Flag for missing deps
-
-# Check each of the deps before quitting on failure
-for cmd in "${DEPS[@]}"; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "Error: $cmd is not installed."
-    MISSING=1
-  fi
-done
-
-# Quit if anything is missing
-if [ "$MISSING" -eq 1 ]; then
-  exit 1
-fi
-
-mkdir -p "$WORKING_DIR"
-mkdir -p "$DOWNLOAD_DIR"
-cd $WORKING_DIR
 
 
 
