@@ -61,6 +61,7 @@ DOWNLOAD_DIR="$HOME/Downloads/yt-dlp"
 YTDL=$(command -v yt-dlp || command -v youtube-dl)
 DEPS=($YTDL ffmpeg ffprobe magick kid3-cli) # List of required commands
 MISSING=0 # Flag for missing deps
+error_tracker=()
 
 # Check each of the deps before quitting on failure
 for cmd in "${DEPS[@]}"; do
@@ -194,14 +195,59 @@ print_verbose "Skip yt-dl step?: $SKIP_YTDL"
 print_verbose "Skip Album Art Management?: $SKIP_ALBUM_ART"
 print_verbose ""
 
+
 # +-------------------------------------------------------------------------+ #
-# |                             Download Music                              | #
+# |                                  Utils                                  | #
 # +-------------------------------------------------------------------------+ #
 
+# A nicely printed report at the end
+error_report() {
+  if [ "${#error_tracker[@]}" -gt 0 ]; then
+    print "\n$COLOR_RED_BRIGHT""There were ${#error_tracker[@]} error(s):"
+  fi
 
-if [ "$SKIP_YTDL" = "NO" ]; then
-  # Note: quality selectors don't seem to apply in our configuration
-  echo -e "$COLOR_YELLOW_BRIGHT""Step: Running yt-dlp""$COLOR_RESET""\n"
+  for item in "${error_tracker[@]}"; do
+    print "  - $COLOR_RED_BRIGHT""$item"
+  done
+}
+
+cleanup() {
+  local move_src="$1" # $filepath_transcoded_tmp
+  local move_dst="$2" # $filepath_final_out
+  local albumart_extracted="$3" # $albumart_extracted_filename
+  local albumart_cropped="$4" # $albumart_cropped_filename
+
+  # move (clobber) file into final destination
+  # remove temp files (attempt regardless if files were made this session)
+  # todo: remove now-old opus assuming it's conversion was successful
+  echo -e "$COLOR_YELLOW_BRIGHT""  Cleanup""$COLOR_RESET"
+  print_verbose "  mv\n    src: $move_src\n    dst: $move_dst"
+
+  mv "$move_src" "$move_dst"
+  rm -f "$albumart_extracted"
+  rm -f "$albumart_cropped"
+}
+
+# +-------------------------------------------------------------------------+ #
+# |                                Download                                 | #
+# +-------------------------------------------------------------------------+ #
+
+# Note: ffmpeg does not keep cover images through opus conversions, so we must
+#       dump and inject it into the final file. Incidentally, yt-dlp seems to
+#       Download widescreen cover images, which are incorrect. So we use
+#       imagemagick to crop and downscale.
+
+download_music() {
+  local yt_url="$1" # $url
+
+  if [ "$SKIP_YTDL" = "YES" ]; then
+    print "$COLOR_YELLOW_BRIGHT""Step: Skipping yt-dlp""$COLOR_RESET""\n"
+    return 0
+  fi
+  
+  # Note: ytdl quality selectors don't seem to apply in our configuration
+  print "$COLOR_YELLOW_BRIGHT""Step: Running yt-dlp""$COLOR_RESET""\n"
+  # todo: swap out for the universal path for yt-dl/p
   yt-dlp \
     --format "250/bestaudio[ext=opus]/bestaudio/best" \
     --extract-audio \
@@ -210,10 +256,15 @@ if [ "$SKIP_YTDL" = "NO" ]; then
     --embed-thumbnail \
     --no-playlist \
     --output "%(artist)s -- %(album)s -- %(0Dtrack_number,playlist_index)s -- %(title)s.%(ext)s" \
-    $url
-else
-  echo -e "$COLOR_YELLOW_BRIGHT""Step: Skipping yt-dlp""$COLOR_RESET""\n"
-fi
+    $yt_url
+
+  # Abort and exit script if yt-dl fails. If the user wants to process existing files, they can
+  # run the skip flag manually
+  if [ $? -ne 0 ]; then
+    print "$COLOR_RED_BRIGHT""Aborted early, as yt-dl failed. Rerun with -s|--skip-ytdl to process existing files in the working_dir"
+    exit 1
+  fi
+}
 
 # +-------------------------------------------------------------------------+ #
 # |                              Album Covers                               | #
@@ -331,26 +382,69 @@ set_universal_cover_fallback() {
   cp "$cover" "$universal_cover"
 }
 
+set_album_cover() {
+  local cover="$1" # $albumart_cropped_filename
+  local output="$2" # $filepath_transcoded_tmp
+
+  # Setting cover-art for opus is notoriously difficult. kid3-cli works, ffmpeg
+  # works too, but only if image is already in spec format for passin as custom
+  # metadata argument.
+  # 
+  # BUG: when specifying a cover, current directory does not matter! The image
+  # must be in the same directory as the file being modified
+  if [ "$SKIP_ALBUM_ART" = "YES" ]; then
+    print_verbose "Skipping: Set Album Cover"
+    return 0
+  fi
+
+  echo -e "$COLOR_YELLOW_BRIGHT""  Set Album Art""$COLOR_RESET"
+  kid3-cli \
+    -c "set picture:${cover} 'Cover (front)'" \
+    "$output"
+}
+
 # +-------------------------------------------------------------------------+ #
-# |                        Process Downloaded Files                         | #
+# |                               Transcoding                               | #
 # +-------------------------------------------------------------------------+ #
 
+transcode_audio() {
+  local input="$1" # $filename
+  local output="$2" # $filepath_transcoded_tmp
+
+  print "$COLOR_YELLOW_BRIGHT""  Transcode to $BITRATE Opus""$COLOR_RESET"
+
+  ffmpeg \
+    -y \
+    -v error \
+    -i "$input" \
+    -c:a libopus \
+    -b:a "$BITRATE" \
+    -map_metadata 0 \
+    "$output"
+
+  if [ $? -ne 0 ]; then
+    print "  $COLOR_RED_BRIGHT""transcode error. pushing to arr""$COLOR_RESET"
+    error_tracker+=("re-transcode to opus failed on: $input")
+  fi
+}
+
+# +-------------------------------------------------------------------------+ #
+# |                                   Main                                  | #
+# +-------------------------------------------------------------------------+ #
+
+# --- Download Music --- #
+download_music $url
+
+# --- Scan Working Directory For Audio Files --- #
 echo -e "$COLOR_YELLOW_BRIGHT""Step: Downsample All to $BITRATE Opus""$COLOR_RESET""\n"
-
 shopt -s nullglob # dont expand unmatched globs
 for filename in *.opus *.mp3 *.flac; do
-  # ffmpeg does not keep cover images through opus conversions, so we must dump
-  # and inject it into the final file. Incidentally, yt-dlp seems to Download
-  # widescreen cover images, which are incorrect. So we use imagemagick to fix
-  # and downscale.
   print "$COLOR_YELLOW_BRIGHT""File: ""$COLOR_YELLOW""$filename""$COLOR_RESET"
 
   # --- Calculate Filenames --- #
-  # Note: using static filepaths for cover/tmp files to simplify the pass-ins 
-  # for subsequent commands.
   basename="${file%.*}"  # removes everything after the last dot
-  filepath_out="$DOWNLOAD_DIR/${basename}.opus"
-  filepath_tmp="$WORKING_DIR/${basename}.tmp.opus"
+  filepath_final_out="$DOWNLOAD_DIR/${basename}.opus"
+  filepath_transcoded_tmp="$WORKING_DIR/${basename}.tmp.opus"
 
   # --- Probe Album Cover --- #
   albumart_ext="$(probe_album_cover_ext "$filename")"
@@ -366,53 +460,29 @@ for filename in *.opus *.mp3 *.flac; do
   # crop_album_cover(input, output)
   crop_album_cover "$albumart_extracted_filename" "$albumart_cropped_filename"
 
+  # --- Set Universal Fallback Cover --- #
   # set_universal_cover_fallback(cover, universal_cover)
-  set_universal_cover_fallback $albumart_cropped_filename $albumart_universal_album_filename
+  set_universal_cover_fallback "$albumart_cropped_filename" "$albumart_universal_album_filename"
   
-
-  # --- Resample Opus --- #
-  echo -e "$COLOR_YELLOW_BRIGHT""  Resample to $BITRATE Opus""$COLOR_RESET"
-  ffmpeg \
-    -y \
-    -v error \
-    -i "$filename" \
-    -c:a libopus \
-    -b:a "$BITRATE" \
-    -map_metadata 0 \
-    "$filepath_tmp"
+  # --- Transcode Opus --- #
+  # transcode_audio(input, output)
+  transcode_audio "$filename" "$filepath_transcoded_tmp"
 
   # --- Set Cover Art --- #
-  # Setting cover-art for opus is notoriously difficult. kid3-cli works, ffmpeg
-  # works too, but only if image is already in spec format for passin as custom
-  # metadata argument.
-  # 
-  # BUG: when specifying a cover, current directory does not matter! The image
-  # must be in the same directory as the file being modified
-  if [ "$SKIP_ALBUM_ART" = "NO" ]; then
-    echo -e "$COLOR_YELLOW_BRIGHT""  Set Album Art""$COLOR_RESET"
-    kid3-cli -c "set picture:${albumart_cropped_filename} 'Cover (front)'" "$filepath_tmp"
-  fi
+  # set_album_cover(cover, output)
+  set_album_cover "$albumart_cropped_filename" "$filepath_transcoded_tmp"
   
   # --- Cleanup --- #
-  # move (clobber) file into final destination
-  # remove temp files (attempt regardless if files were made this session)
-  # remove now-old opus assuming it's conversion was successful
-  echo -e "$COLOR_YELLOW_BRIGHT""  Cleanup""$COLOR_RESET"
-  print_verbose "  mv\n    src: $filepath_tmp\n    dst: $filepath_out"
+  cleanup \
+    "$filepath_transcoded_tmp" \
+    "$filepath_final_out" \
+    "$albumart_extracted_filename" \
+    "$albumart_cropped_filename"
 
-  # Copy last valid album-art covers into an album-wide album-art for songs that
-  # are missing covers
-  # if [ ... ] && [ -f "$albumart_cropped_filename" ]; then
-  #   cp "$albumart_cropped_filename" "$albumart_universal_album_filename"
-  # fi
-
-  mv "$filepath_tmp" "$filepath_out"
-  rm -f "$albumart_extracted_filename"
-  rm -f "$albumart_cropped_filename"
 done
 shopt -u nullglob # see matching shopt above
 
 # --- Final Cleanup --- #
-# rm -f "$albumart_universal_album_filename"
-
+rm -f "$albumart_universal_album_filename"
 echo -e "$COLOR_YELLOW_BRIGHT""Process Complete""$COLOR_RESET"
+error_report
