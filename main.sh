@@ -44,9 +44,11 @@
 # -vcodec: copy the image metadata
 
 
-# Boilerplate Arg management
-# https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
-# flags that take no values only perform one shift, instead of two
+
+
+# +-------------------------------------------------------------------------+ #
+# |                          Bash Args Boilerplate                          | #
+# +-------------------------------------------------------------------------+ #
 
 show_help() {
   cat <<EOF
@@ -59,25 +61,42 @@ Options:
   -v, --verbose     Enable verbose mode
   -s, --skip-ytdl   Skip yt-dl and only process existing files in the working_dir
                     (helpful for stuck files, or processing existing collections)
+
+Requirements:
+  - yt-dl (or yt-dlp)
+  - ffmpeg
+  - ffprobe
+  - image-magick
+  - kid3-cli
 EOF
 }
 
 POSITIONAL_ARGS=()
+BITRATE="64k"
+SKIP_YTDL=NO
+VERBOSE=NO
 
+# Boilerplate Arg management https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
+# flags that take no values only perform one shift, instead of two
 while [[ $# -gt 0 ]]; do
   case $1 in
     -s|--skip-ytdl)
-      skip_ytdl=YES
+      SKIP_YTDL=YES
       shift # past argument
+      ;;
+    -b|--bitrate)
+      BITRATE="$2"
+      shift # past argument
+      shift # past value
       ;;
     --help)
       show_help
       shift # past argument
       exit 0
       ;;
-    --verbose)
+    -v|--verbose)
       # todo
-      # verbose=YES
+      VERBOSE=YES
       shift # past argument
       ;;
     -*|--*)
@@ -100,36 +119,66 @@ if [[ -n $1 ]]; then
 fi
 
 # If no args passed in, interactively ask for the URL
-if [ -z "$1" ]; then
+if [ -z "$1" ] && [ "$SKIP_YTDL" = "NO" ]; then
   read -p "Enter the YT/YT-Music URL: " url
 else
   url="$1"
 fi
 
+# Debug Printing
+if [ "$VERBOSE" = "YES" ]; then
+  echo "Parameters Specified:"
+  echo ""
+  echo "Positional Arguments: $POSITIONAL_ARGS"
+  echo "Bitrate: $BITRATE"
+  echo "Skip yt-dl step?: $SKIP_YTDL"
+  echo ""
+fi
 
-echo "url is $url"
-exit 0
+# echo -e "\033[94mBright Blue\033[0m"
+
 
 
 # +-------------------------------------------------------------------------+ #
 # |                             Initialization                              | #
 # +-------------------------------------------------------------------------+ #
 
-# Init
-WORKING_DIR="$HOME/Downloads/_yt-dlp"
-DOWNLOAD_DIR="$HOME/Downloads/yt-dlp"
-
 COLOR_RESET="\033[0m"
 COLOR_YELLOW="\033[33m"
 COLOR_YELLOW_BRIGHT="\033[93m"
+
+WORKING_DIR="$HOME/Downloads/_yt-dlp"
+DOWNLOAD_DIR="$HOME/Downloads/yt-dlp"
+
+YTDL=$(command -v yt-dlp || command -v youtube-dl)
+DEPS=($YTDL ffmpeg ffprobe magick kid3-cli) # List of required commands
+MISSING=0 # Flag for missing deps
+
+# Check each of the deps before quitting on failure
+for cmd in "${DEPS[@]}"; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Error: $cmd is not installed."
+    MISSING=1
+  fi
+done
+
+# Quit if anything is missing
+if [ "$MISSING" -eq 1 ]; then
+  exit 1
+fi
 
 mkdir -p "$WORKING_DIR"
 mkdir -p "$DOWNLOAD_DIR"
 cd $WORKING_DIR
 
+
+
+
 # +-------------------------------------------------------------------------+ #
 # |                             Download Music                              | #
 # +-------------------------------------------------------------------------+ #
+
+exit 0
 
 # Note: quality selectors don't seem to apply in our configuration
 echo -e "$COLOR_YELLOW_BRIGHT----- Running yt-dlp -----$COLOR_RESET"
@@ -151,8 +200,7 @@ echo -e "$COLOR_YELLOW_BRIGHT----- Downsample All to 64k Opus -----$COLOR_RESET"
 
 # for file in *.opus; do
 
-# dont expand unmatched globs
-shopt -s nullglob
+shopt -s nullglob # dont expand unmatched globs
 for file in *.opus *.mp3 *.flac; do
   # ffmpeg does not keep cover images through conversions, so we must dump
   # and inject it into the final file. Incidentally, yt-dlp seems to Download
@@ -202,7 +250,7 @@ for file in *.opus *.mp3 *.flac; do
     -v error \
     -i "$file" \
     -c:a libopus \
-    -b:a 64k \
+    -b:a "$BITRATE" \
     -map_metadata 0 \
     "$tmp_filepath"
 
@@ -226,6 +274,6 @@ for file in *.opus *.mp3 *.flac; do
   # rm -f "$albumart_filename"
   echo ""
 done
-shopt -u nullglob
+shopt -u nullglob # see matching shopt above
 
 echo -e "$COLOR_YELLOW_BRIGHT----- Finished -----$COLOR_RESET"
