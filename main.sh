@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 
-# todo: flag to extract a album art cover from one of any file, and use that as a cover. 
-# or some sort of combination to use last valid album art using a set tmp file
+# !!todo: metadata add track number. make compatible with "NA" null value
 
-# todo: metadata add track number. make compatible with "NA" null value
-# todo: test for failures
-# todo: add argument to allow skipping of yt-dlp and reprocessing working-dir
 # todo: check for conversion success before deleting?
 # todo: check for filecount at end?
 # todo: progress counter for for-loop
@@ -50,9 +46,10 @@
 
 COLOR_RESET="\033[0m"
 COLOR_YELLOW="\033[33m"
-COLOR_YELLOW_BRIGHT="\033[93m"
-COLOR_MAGENTA_BRIGHT="\033[95m"
-COLOR_RED_BRIGHT="\033[91m"
+COLOR_BRIGHT_YELLOW="\033[93m"
+COLOR_BRIGHT_MAGENTA="\033[95m"
+COLOR_BRIGHT_RED="\033[91m"
+COLOR_BRIGHT_GREEN="\033[92m"
 
 WORKING_DIR="$HOME/Downloads/_yt-dlp"
 DOWNLOAD_DIR="$HOME/Downloads/yt-dlp"
@@ -85,7 +82,7 @@ Options:
   -sa, --skip-album-art
                      Bypass processing album-art covers (extracting, cropping,
                      injecting)
-  --collections      Specifies that the files in the working_dir are not from one
+  --collection      Specifies that the files in the working_dir are not from one
                      single album. Useful for processing collections at a time.
                      Prevents borrowing album-covers from other files.
 
@@ -115,7 +112,7 @@ while [[ $# -gt 0 ]]; do
       SKIP_ALBUM_ART=YES
       shift # past argument
       ;;
-    --collections)
+    --collection)
       IS_COLLECTION=YES
       shift # past argument
       ;;
@@ -183,18 +180,27 @@ print() {
 
 print_verbose() {
   if [ "$VERBOSE" != "YES" ]; then return; fi
-  echo -e "$COLOR_MAGENTA_BRIGHT""$@""$COLOR_RESET" >&2
+  echo -e "$COLOR_YELLOW""$@""$COLOR_RESET" >&2
 }
 
 # A nicely printed report at the end
 error_report() {
   if [ "${#error_tracker[@]}" -gt 0 ]; then
-    print "\n$COLOR_RED_BRIGHT""There were ${#error_tracker[@]} error(s):"
+    print "\n$COLOR_BRIGHT_RED""There were ${#error_tracker[@]} error(s):"
   fi
 
   for item in "${error_tracker[@]}"; do
-    print "  - $COLOR_RED_BRIGHT""$item"
+    print "  - $COLOR_BRIGHT_RED""$item"
   done
+}
+
+delete_file() {
+  local file="$1"
+
+  if [ -f "$file" ]; then
+    print_verbose "  + rm -f $file"
+    rm -f $file
+  fi
 }
 
 cleanup() {
@@ -206,12 +212,12 @@ cleanup() {
   # move (clobber) file into final destination
   # remove temp files (attempt regardless if files were made this session)
   # todo: remove now-old opus assuming it's conversion was successful
-  echo -e "$COLOR_YELLOW_BRIGHT""  Cleanup""$COLOR_RESET"
-  print_verbose "  mv\n    src: $move_src\n    dst: $move_dst"
+  print "$COLOR_BRIGHT_YELLOW""  Cleanup""$COLOR_RESET"
+  print_verbose "  + mv\n    src: $move_src\n    dst: $move_dst"
 
   mv "$move_src" "$move_dst"
-  rm -f "$albumart_extracted"
-  rm -f "$albumart_cropped"
+  delete_file "$albumart_extracted"
+  delete_file "$albumart_cropped"
 }
 
 initialize() {
@@ -228,7 +234,7 @@ initialize() {
   print_verbose "Positional Arguments: $POSITIONAL_ARGS"
   print_verbose "Bitrate: $BITRATE"
   print_verbose "Skip yt-dl step?: $SKIP_YTDL"
-  print_verbose "Skip Album Art Management?: $SKIP_ALBUM_ART"
+  print_verbose "Skip Album Cover Management?: $SKIP_ALBUM_ART"
   print_verbose ""
 }
 
@@ -245,12 +251,12 @@ download_music() {
   local yt_url="$1" # $url
 
   if [ "$SKIP_YTDL" = "YES" ]; then
-    print "$COLOR_YELLOW_BRIGHT""Step: Skipping yt-dlp""$COLOR_RESET""\n"
+    print "$COLOR_BRIGHT_YELLOW""Step: Skipping yt-dlp""$COLOR_RESET""\n"
     return 0
   fi
   
   # Note: ytdl quality selectors don't seem to apply in our configuration
-  print "$COLOR_YELLOW_BRIGHT""Step: Running yt-dlp""$COLOR_RESET""\n"
+  print "$COLOR_BRIGHT_YELLOW""Step: Running yt-dlp""$COLOR_RESET""\n"
   # todo: swap out for the universal path for yt-dl/p
   yt-dlp \
     --format "250/bestaudio[ext=opus]/bestaudio/best" \
@@ -265,7 +271,7 @@ download_music() {
   # Abort and exit script if yt-dl fails. If the user wants to process existing files, they can
   # run the skip flag manually
   if [ $? -ne 0 ]; then
-    print "$COLOR_RED_BRIGHT""Aborted early, as yt-dl failed. Rerun with -s|--skip-ytdl to process existing files in the working_dir"
+    print "$COLOR_BRIGHT_RED""Aborted early, as yt-dl failed. Rerun with -s|--skip-ytdl to process existing files in the working_dir"
     exit 1
   fi
 }
@@ -279,10 +285,12 @@ probe_album_cover_ext() {
 
   # Guard
   if [ "$SKIP_ALBUM_ART" = "YES" ]; then
-    print "Skipping Album Cover Routines"
+    print_verbose "  Setting Enabled: Skip Extract Album Covers"
     echo $FALLBACK_EXT # return for graceful handling
     return 0
   fi
+
+  print "$COLOR_BRIGHT_YELLOW""  Probe Album Cover Extension""$COLOR_RESET"
 
   # Probe for file extension
   albumart_ext=$(
@@ -294,16 +302,15 @@ probe_album_cover_ext() {
       "$1"
   )
   
-  # Debug msg for failure
   if [ -z "$albumart_ext" ]; then
-    print_verbose "  Unable to probe Album Art Extension. fallback is $FALLBACK_EXT"
+    print "  $COLOR_BRIGHT_RED- Failed to probe Album Cover Extension. fallback set to $FALLBACK_EXT"
   fi
 
   # Fallback
   albumart_ext=${albumart_ext:-$FALLBACK_EXT}
 
   # Return
-  print_verbose "  Album Art Extension set to: $albumart_ext"
+  print_verbose "  + Album Cover Extension: $albumart_ext"
   echo "$albumart_ext"
 }
 
@@ -315,11 +322,11 @@ extract_album_cover() {
   # Note: this is written for .opus specifically. flacs and other formats may fail
   # todo: "${VERBOSE:+info}${VERBOSE:+"error"}" for -v line
   if [ "$SKIP_ALBUM_ART" = "YES" ]; then
-    print_verbose "Skipping: Extract Album Cover"
+    print_verbose "  + Skipping: Extract Album Cover"
     return 0
   fi
 
-  print "$COLOR_YELLOW_BRIGHT""  Extract Album Art""$COLOR_RESET"
+  print "$COLOR_BRIGHT_YELLOW""  Extract Album Cover""$COLOR_RESET"
 
   ffmpeg \
     -y \
@@ -332,11 +339,11 @@ extract_album_cover() {
 
   # Check for Failure
   if [ $? -ne 0 ]; then
-    echo -e "  $COLOR_RED_BRIGHT""ffmpeg failed to extract album art""$COLOR_RESET"
+    print "  $COLOR_BRIGHT_RED""- ffmpeg failed to extract album cover""$COLOR_RESET"
 
     # Now check for album-wide cover already exists. If so, copy it into place
     if [ -f "$fallback_file" ]; then
-      echo -e "  $COLOR_YELLOW""Using album-wide cover as alternative"
+      print "  $COLOR_YELLOW""Using album-wide cover as alternative"
       cp "$fallback_file" "$output_file"
     fi
   fi
@@ -350,17 +357,18 @@ crop_album_cover() {
   local input="$1" # $albumart_extracted_filename
   local output="$2" # $albumart_cropped_filename
 
-  if [ "$SKIP_ALBUM_ART" = "YES" ]; then
-    print_verbose "Skipping: Crop Album Cover"
+  # If skip setting is true, or if the input file is missing, then return early
+  if [ "$SKIP_ALBUM_ART" = "YES" ] || [ ! -f "$input" ]; then
+    print_verbose "  $COLOR_YELLOW""+ Skipping: Crop Album Cover""$COLOR_RESET"
     return 0
   fi
 
-  print "$COLOR_YELLOW_BRIGHT""  Crop Album Art""$COLOR_RESET"
+  print "$COLOR_BRIGHT_YELLOW""  Crop Album Cover""$COLOR_RESET"
   img_size=$(magick identify -format '%[fx:min(w,h)]' "$input")
 
   # Failure handling
   if [ $? -ne 0 ]; then
-    print "  $COLOR_RED_BRIGHT""image-magick failed to determine image size""$COLOR_RESET"
+    print "  $COLOR_BRIGHT_RED""image-magick failed to determine image size""$COLOR_RESET"
     return 1
   fi
 
@@ -382,7 +390,7 @@ set_universal_cover_fallback() {
   fi
 
   if [ -f "$cover" ]; then
-    print_verbose "  Setting Universal Album Art Fallback"
+    print_verbose "  + Setting Universal Album Cover Fallback"
     cp "$cover" "$universal_cover"
   fi
 }
@@ -390,29 +398,30 @@ set_universal_cover_fallback() {
 set_album_cover() {
   local cover="$1" # $albumart_cropped_filename
   local output="$2" # $filepath_transcoded_tmp
-  local fallback="$3" # $albumart_universal_album_filename
 
   # Setting cover-art for opus is notoriously difficult. kid3-cli works, ffmpeg
   # works too, but only if image is already in spec format for passin as custom
   # metadata argument.
   # 
   # Note: The fallback cover is set through a cp command (if conditions apply)
-  #       before this function runs
+  #       before this function runs. So if the file is missing, tnere is no cover
   # 
   # BUG: when specifying a cover, current directory does not matter! The image
   #      must be in the same directory as the file being modified
-  if [ "$SKIP_ALBUM_ART" = "YES" ]; then
-    print_verbose "Skipping: Set Album Cover"
+
+  # Skip if setting enabled, or cover is missing
+  if [ "$SKIP_ALBUM_ART" = "YES" ] || [ ! -f "$cover" ]; then
+    print_verbose "  + Skipping: Set Album Cover"
     return 0
   fi
 
-  echo -e "$COLOR_YELLOW_BRIGHT""  Set Album Art""$COLOR_RESET"
+  print "$COLOR_BRIGHT_YELLOW""  Set Album Cover""$COLOR_RESET"
   kid3-cli \
     -c "set picture:${cover} 'Cover (front)'" \
     "$output"
 
   if [ $? -ne 0 ]; then
-    print "  $COLOR_RED_BRIGHT""set-cover error in kid3-cli""$COLOR_RESET"
+    print "  $COLOR_BRIGHT_RED""set-cover error in kid3-cli""$COLOR_RESET"
     error_tracker+=("kid3-cli errored on set-cover for: $input")
   fi
 }
@@ -425,7 +434,7 @@ transcode_audio() {
   local input="$1" # $filename
   local output="$2" # $filepath_transcoded_tmp
 
-  print "$COLOR_YELLOW_BRIGHT""  Transcode to $BITRATE Opus""$COLOR_RESET"
+  print "$COLOR_BRIGHT_YELLOW""  Transcode to $BITRATE Opus""$COLOR_RESET"
 
   ffmpeg \
     -y \
@@ -437,7 +446,7 @@ transcode_audio() {
     "$output"
 
   if [ $? -ne 0 ]; then
-    print "  $COLOR_RED_BRIGHT""transcode error""$COLOR_RESET"
+    print "  $COLOR_BRIGHT_RED""transcode error""$COLOR_RESET"
     error_tracker+=("re-transcode to opus failed on: $input")
   fi
 }
@@ -453,13 +462,13 @@ initialize
 download_music $url
 
 # --- Iterate Over Files & Process --- #
-echo -e "$COLOR_YELLOW_BRIGHT""Step: Downsample All to $BITRATE Opus""$COLOR_RESET""\n"
+print "$COLOR_BRIGHT_YELLOW""Step: Downsample All to $BITRATE Opus""$COLOR_RESET"
 
 shopt -s nullglob # dont expand unmatched globs
 for filename in *.opus *.mp3 *.flac; do
-  print "$COLOR_YELLOW_BRIGHT""File: ""$COLOR_YELLOW""$filename""$COLOR_RESET"
+  print "\n""$COLOR_BRIGHT_YELLOW""File: ""$COLOR_BRIGHT_GREEN""$filename""$COLOR_RESET"
 
-  basename="${file%.*}"  # removes everything after the last dot
+  basename="${filename%.*}"  # removes everything after the last dot
   filepath_final_out="$DOWNLOAD_DIR/${basename}.opus"
   filepath_transcoded_tmp="$WORKING_DIR/${basename}.tmp.opus"
   albumart_ext="$(probe_album_cover_ext "$filename")" # Probe Album Cover for Extension
@@ -487,7 +496,6 @@ for filename in *.opus *.mp3 *.flac; do
   set_album_cover \
     "$albumart_cropped_filename" \
     "$filepath_transcoded_tmp" \
-    "$albumart_universal_album_filename"
   
   cleanup \
     "$filepath_transcoded_tmp" \
@@ -499,6 +507,6 @@ done
 shopt -u nullglob # see matching shopt above
 
 # --- Final Cleanup --- #
-# rm -f "$albumart_universal_album_filename"
-echo -e "$COLOR_YELLOW_BRIGHT""Process Complete""$COLOR_RESET"
+rm -f "$albumart_universal_album_filename"
+print "$COLOR_BRIGHT_YELLOW""\nProcess Complete""$COLOR_RESET"
 error_report
