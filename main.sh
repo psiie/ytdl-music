@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 
-# !!todo: metadata add track number. make compatible with "NA" null value
-
-# todo: check for conversion success before deleting?
+# todo: remove year metadata; ytdl grabs from upload-date which isn't the release date
+# todo: add flag to clear ytdl-download-history.list
 
 # +-------------------------------------------------------------------------+ #
 # |                              Documentation                              | #
@@ -74,12 +74,19 @@ SKIP_YTDL=NO
 VERBOSE=""
 SKIP_ALBUM_ART=NO # Using "NO" for increased readability in if-statements
 IS_COLLECTION=""
+NO_PRUNE=""
 
 show_help() {
   cat <<EOF
 Usage: ytdl-music [flags] url
 
-Passing no arguments enters an interactive mode in which to paste a youtube url
+Passing no url enters an interactive mode in which to paste a youtube url.
+
+How to use:
+  Navigate to an album overview on yt music. Copy/Paste the playlist-specific
+  url as the final argument. If you click into a specific song, the url will
+  reflect both the playlist and the specific song, but will only download that
+  specific song.
 
 Options:
   -h,  --help        Show this help and exit
@@ -89,9 +96,10 @@ Options:
   -sa, --skip-album-art
                      Bypass processing album-art covers (extracting, cropping,
                      injecting)
-  --collection      Specifies that the files in the working_dir are not from one
+  --collection       Specifies that the files in the working_dir are not from one
                      single album. Useful for processing collections at a time.
                      Prevents borrowing album-covers from other files.
+  --no-prune         Skip the final cleanup phase of files
 
 Requirements:
   - yt-dl (or yt-dlp)
@@ -121,6 +129,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --collection)
       IS_COLLECTION=YES
+      shift # past argument
+      ;;
+    --no-prune)
+      NO_PRUNE=YES
       shift # past argument
       ;;
     --help)
@@ -212,6 +224,11 @@ get_filesize_mb() {
 delete_file() {
   local file="$1"
 
+  if [ "$NO_PRUNE" = "YES" ]; then
+    print_verbose "Skipping Prune Step"
+    return 0
+  fi
+
   if [ -f "$file" ]; then
     print_verbose "  + rm -f $file"
     rm -f "$file"
@@ -289,6 +306,14 @@ download_music() {
     print "$COLOR_BRIGHT_YELLOW""Step: Skipping yt-dlp""$COLOR_RESET""\n"
     return 0
   fi
+
+  # Check if the url is the entire channel. This is usually too much and you
+  # lose out on track-numbering since playlists are ordered in the same album
+  # order on yt. 
+  if [[ "$var" == *"/channel/"* ]]; then
+    print "$COLOR_BRIGHT_RED""Error: The URL appears to be an entire channel and not a specific album. Track numbering isn't possible with this approach. Aborting.""$COLOR_RESET""\n"
+    exit 1
+  fi
   
   # Note: ytdl quality selectors don't seem to apply in our configuration
   print "$COLOR_BRIGHT_YELLOW""Step: Running yt-dlp""$COLOR_RESET""\n"
@@ -299,8 +324,9 @@ download_music() {
     --audio-format opus \
     --add-metadata \
     --embed-thumbnail \
+    --download-archive "ytdl-download-history.list" \
     --no-playlist \
-    --output "%(artist)s -- %(album)s -- %(0Dtrack_number,playlist_index)s -- %(title)s.%(ext)s" \
+    --output "%(artist)s - %(album)s - %(0Dtrack_number,playlist_index)s - %(title)s.%(ext)s" \
     $yt_url
 
   # Abort and exit script if yt-dl fails. If the user wants to process existing files, they can
@@ -422,7 +448,7 @@ crop_album_cover() {
   fi
 }
 
-set_universal_cover_fallback() {
+save_universal_cover_fallback() {
   local cover="$1"
   local universal_cover="$2" # $albumart_universal_album_filename
 
@@ -492,6 +518,42 @@ transcode_audio() {
   fi
 }
 
+get_track_num_from_filename() {
+  local filename="$1"
+
+  # Relies on the filename output from YT-DL to be a specific format we
+  # specified earlier
+  track=$(echo "$filename" | awk -F' - ' '{print $3}')
+
+  # Check specifically for "NA", which yt-dl does when not downloading from a
+  # playlist. Even if the song is from an album
+  if [ "$filename" = "NA" ]; then
+    print "$COLOR_BRIGHT_YELLOW""  + Track Num is 'NA' from ytdl. Not setting tag"
+    echo ""
+    return 0
+  fi
+
+  echo "$track" # return value
+}
+
+set_track_num() {
+  local file="$1"
+  local track_num="$2"
+
+  # Numeric check. Verified value only consists of 0-9 chars
+  if [[ ! "$track_num" =~ ^[0-9]+$ ]]; then
+    print "$COLOR_BRIGHT_YELLOW""  + Track Num are not numbers. Not setting tag"
+    print "$COLOR_BRIGHT_YELLOW""    value: $track_num"
+    echo ""
+    return 0
+  fi
+
+  print "$COLOR_BRIGHT_YELLOW""  Set Track Number Tag: $track_num""$COLOR_RESET"
+  kid3-cli \
+    -c "set track $track_num" \
+    "$file"
+}
+
 # +-------------------------------------------------------------------------+ #
 # |                                   Main                                  | #
 # +-------------------------------------------------------------------------+ #
@@ -506,7 +568,7 @@ download_music $url
 print "$COLOR_BRIGHT_YELLOW""Step: Downsample All to $BITRATE Opus""$COLOR_RESET"
 
 shopt -s nullglob # dont expand unmatched globs
-for filename in *.opus *.mp3 *.flac; do
+for filename in *.opus *.mp3 *.flac *aac; do
   # Skip temp files
   if [[ "$filename" == *.tmp* ]]; then
     print_verbose "  Skipping .tmp file $filename"
@@ -522,6 +584,7 @@ for filename in *.opus *.mp3 *.flac; do
   albumart_extracted_filename="cover.tmp.$albumart_ext"
   albumart_cropped_filename="cover.jpg"
   albumart_universal_album_filename="album.jpg"
+  track_num=$(get_track_num_from_filename "$filename") # Extract track num from filename
 
   extract_album_cover \
     "$filename" \
@@ -532,7 +595,7 @@ for filename in *.opus *.mp3 *.flac; do
     "$albumart_extracted_filename" \
     "$albumart_cropped_filename"
 
-  set_universal_cover_fallback \
+  save_universal_cover_fallback \
     "$albumart_cropped_filename" \
     "$albumart_universal_album_filename"
   
@@ -540,9 +603,13 @@ for filename in *.opus *.mp3 *.flac; do
     "$filename" \
     "$filepath_transcoded_tmp"
 
+  set_track_num \
+    "$filepath_transcoded_tmp" \
+    "$track_num"
+
   set_album_cover \
     "$albumart_cropped_filename" \
-    "$filepath_transcoded_tmp" \
+    "$filepath_transcoded_tmp"
   
   cleanup \
     "$filename" \
